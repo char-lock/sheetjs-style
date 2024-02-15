@@ -37,7 +37,7 @@ function parse_wb_xml(data, opts)/*:WorkbookFile*/ {
 						default: wb.WBProps[w[0]] = y[w[0]];
 					}
 				});
-				if(y.codeName) wb.WBProps.CodeName = y.codeName;
+				if(y.codeName) wb.WBProps.CodeName = utf8read(y.codeName);
 				break;
 			case '</workbookPr>': break;
 
@@ -151,23 +151,21 @@ function parse_wb_xml(data, opts)/*:WorkbookFile*/ {
 		}
 		return x;
 	});
-	if(XMLNS.main.indexOf(wb.xmlns) === -1) throw new Error("Unknown Namespace: " + wb.xmlns);
+	if(XMLNS_main.indexOf(wb.xmlns) === -1) throw new Error("Unknown Namespace: " + wb.xmlns);
 
 	parse_wb_defaults(wb);
 
 	return wb;
 }
 
-var WB_XML_ROOT = writextag('workbook', null, {
-	'xmlns': XMLNS.main[0],
-	//'xmlns:mx': XMLNS.mx,
-	//'xmlns:s': XMLNS.main[0],
-	'xmlns:r': XMLNS.r
-});
-
 function write_wb_xml(wb/*:Workbook*//*::, opts:?WriteOpts*/)/*:string*/ {
 	var o = [XML_HEADER];
-	o[o.length] = WB_XML_ROOT;
+	o[o.length] = writextag('workbook', null, {
+		'xmlns': XMLNS_main[0],
+		//'xmlns:mx': XMLNS.mx,
+		//'xmlns:s': XMLNS_main[0],
+		'xmlns:r': XMLNS.r
+	});
 
 	var write_names = (wb.Workbook && (wb.Workbook.Names||[]).length > 0);
 
@@ -192,7 +190,17 @@ function write_wb_xml(wb/*:Workbook*//*::, opts:?WriteOpts*/)/*:string*/ {
 	var sheets = wb.Workbook && wb.Workbook.Sheets || [];
 	var i = 0;
 
-	/* bookViews */
+	/* bookViews only written if first worksheet is hidden */
+	if(sheets && sheets[0] && !!sheets[0].Hidden) {
+		o[o.length] = "<bookViews>";
+		for(i = 0; i != wb.SheetNames.length; ++i) {
+			if(!sheets[i]) break;
+			if(!sheets[i].Hidden) break;
+		}
+		if(i == wb.SheetNames.length) i = 0;
+		o[o.length] = '<workbookView firstSheet="' + i + '" activeTab="' + i + '"/>';
+		o[o.length] = "</bookViews>";
+	}
 
 	o[o.length] = "<sheets>";
 	for(i = 0; i != wb.SheetNames.length; ++i) {

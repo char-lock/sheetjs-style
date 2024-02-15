@@ -37,10 +37,13 @@ function xlml_parsexmltagobj(tag/*:string*/) {
 
 // ----
 
-function xlml_format(format, value)/*:string*/ {
+/* map from xlml named formats to SSF TODO: localize */
+var XLMLFormatMap/*: {[string]:string}*/;
+
+function xlml_format(format, value, date1904)/*:string*/ {
 	var fmt = XLMLFormatMap[format] || unescapexml(format);
-	if(fmt === "General") return SSF._general(value);
-	return SSF.format(fmt, value);
+	if(fmt === "General") return SSF_general(value);
+	return SSF_format(fmt, value, {date1904: !!date1904});
 }
 
 function xlml_set_custprop(Custprops, key, cp, val/*:string*/) {
@@ -56,24 +59,24 @@ function xlml_set_custprop(Custprops, key, cp, val/*:string*/) {
 	Custprops[unescapexml(key)] = oval;
 }
 
-function safe_format_xlml(cell/*:Cell*/, nf, o) {
+function safe_format_xlml(cell/*:Cell*/, nf, o, date1904) {
 	if(cell.t === 'z') return;
 	if(!o || o.cellText !== false) try {
 		if(cell.t === 'e') { cell.w = cell.w || BErr[cell.v]; }
 		else if(nf === "General") {
 			if(cell.t === 'n') {
-				if((cell.v|0) === cell.v) cell.w = SSF._general_int(cell.v);
-				else cell.w = SSF._general_num(cell.v);
+				if((cell.v|0) === cell.v) cell.w = cell.v.toString(10);
+				else cell.w = SSF_general_num(cell.v);
 			}
-			else cell.w = SSF._general(cell.v);
+			else cell.w = SSF_general(cell.v);
 		}
-		else cell.w = xlml_format(nf||"General", cell.v);
+		else cell.w = xlml_format(nf||"General", cell.v, date1904);
 	} catch(e) { if(o.WTF) throw e; }
 	try {
 		var z = XLMLFormatMap[nf]||nf||"General";
 		if(o.cellNF) cell.z = z;
-		if(o.cellDates && cell.t == 'n' && SSF.is_date(z)) {
-			var _d = SSF.parse_date_code(cell.v); if(_d) { cell.t = 'd'; cell.v = new Date(_d.y, _d.m-1,_d.d,_d.H,_d.M,_d.S,_d.u); }
+		if(o.cellDates && cell.t == 'n' && fmt_is_date(z)) {
+			var _d = SSF_parse_date_code(cell.v + (date1904 ? 1462 : 0)); if(_d) { cell.t = 'd'; cell.v = new Date(Date.UTC(_d.y, _d.m-1,_d.d,_d.H,_d.M,_d.S,_d.u)); }
 		}
 	} catch(e) { if(o.WTF) throw e; }
 }
@@ -89,7 +92,7 @@ function process_style_xlml(styles, stag, opts) {
 }
 
 /* TODO: there must exist some form of OSP-blessed spec */
-function parse_xlml_data(xml, ss, data, cell/*:any*/, base, styles, csty, row, arrayf, o) {
+function parse_xlml_data(xml, ss, data, cell/*:any*/, base, styles, csty, row, arrayf, o, date1904) {
 	var nf = "General", sid = cell.StyleID, S = {}; o = o || {};
 	var interiors = [];
 	var i = 0;
@@ -112,9 +115,8 @@ function parse_xlml_data(xml, ss, data, cell/*:any*/, base, styles, csty, row, a
 			break;
 		case 'DateTime':
 			if(xml.slice(-1) != "Z") xml += "Z";
-			cell.v = (parseDate(xml) - new Date(Date.UTC(1899, 11, 30))) / (24 * 60 * 60 * 1000);
+			cell.v = datenum(parseDate(xml, date1904), date1904);
 			if(cell.v !== cell.v) cell.v = unescapexml(xml);
-			else if(cell.v<60) cell.v = cell.v -1;
 			if(!nf || nf == "General") nf = "yyyy-mm-dd";
 			/* falls through */
 		case 'Number':
@@ -127,7 +129,7 @@ function parse_xlml_data(xml, ss, data, cell/*:any*/, base, styles, csty, row, a
 			else { cell.t = 's'; cell.v = xlml_fixstr(ss||xml); }
 			break;
 	}
-	safe_format_xlml(cell, nf, o);
+	safe_format_xlml(cell, nf, o, date1904);
 	if(o.cellFormula !== false) {
 		if(cell.Formula) {
 			var fstr = unescapexml(cell.Formula);
@@ -156,40 +158,56 @@ function parse_xlml_data(xml, ss, data, cell/*:any*/, base, styles, csty, row, a
 	if(cell.StyleID !== undefined) cell.ixfe = cell.StyleID;
 }
 
+function xlml_prefix_dname(dname) {
+	return XLSLblBuiltIn.indexOf("_xlnm." + dname) > -1 ? "_xlnm." + dname : dname;
+}
+
 function xlml_clean_comment(comment/*:any*/) {
 	comment.t = comment.v || "";
 	comment.t = comment.t.replace(/\r\n/g,"\n").replace(/\r/g,"\n");
 	comment.v = comment.w = comment.ixfe = undefined;
 }
 
-function xlml_normalize(d)/*:string*/ {
-	if(has_buf &&/*::typeof Buffer !== "undefined" && d != null && d instanceof Buffer &&*/ Buffer.isBuffer(d)) return d.toString('utf8');
-	if(typeof d === 'string') return d;
-	/* duktape */
-	if(typeof Uint8Array !== 'undefined' && d instanceof Uint8Array) return utf8read(a2s(ab2a(d)));
-	throw new Error("Bad input format: expected Buffer or string");
-}
-
 /* TODO: Everything */
-/* UOS uses CJK in tags */
-var xlmlregex = /<(\/?)([^\s?>!\/:]*:|)([^\s?>:\/]+)[^>]*>/mg;
-//var xlmlregex = /<(\/?)([a-z0-9]*:|)(\w+)[^>]*>/mg;
 function parse_xlml_xml(d, _opts)/*:Workbook*/ {
 	var opts = _opts || {};
-	make_ssf(SSF);
+	make_ssf();
 	var str = debom(xlml_normalize(d));
 	if(opts.type == 'binary' || opts.type == 'array' || opts.type == 'base64') {
-		if(typeof cptable !== 'undefined') str = cptable.utils.decode(65001, char_codes(str));
+		if(typeof $cptable !== 'undefined') str = $cptable.utils.decode(65001, char_codes(str));
 		else str = utf8read(str);
 	}
 	var opening = str.slice(0, 1024).toLowerCase(), ishtml = false;
+	opening = opening.replace(/".*?"/g, "");
+	if((opening.indexOf(">") & 1023) > Math.min((opening.indexOf(",") & 1023), (opening.indexOf(";")&1023))) { var _o = dup(opts); _o.type = "string"; return PRN.to_workbook(str, _o); }
 	if(opening.indexOf("<?xml") == -1) ["html", "table", "head", "meta", "script", "style", "div"].forEach(function(tag) { if(opening.indexOf("<" + tag) >= 0) ishtml = true; });
-	if(ishtml) return HTML_.to_workbook(str, opts);
+	if(ishtml) return html_to_workbook(str, opts);
+
+	XLMLFormatMap = ({
+		"General Number": "General",
+		"General Date": table_fmt[22],
+		"Long Date": "dddd, mmmm dd, yyyy",
+		"Medium Date": table_fmt[15],
+		"Short Date": table_fmt[14],
+		"Long Time": table_fmt[19],
+		"Medium Time": table_fmt[18],
+		"Short Time": table_fmt[20],
+		"Currency": '"$"#,##0.00_);[Red]\\("$"#,##0.00\\)',
+		"Fixed": table_fmt[2],
+		"Standard": table_fmt[4],
+		"Percent": table_fmt[10],
+		"Scientific": table_fmt[11],
+		"Yes/No": '"Yes";"Yes";"No";@',
+		"True/False": '"True";"True";"False";@',
+		"On/Off": '"Yes";"Yes";"No";@'
+	}/*:any*/);
+
+
 	var Rn;
 	var state = [], tmp;
 	if(DENSE != null && opts.dense == null) opts.dense = DENSE;
-	var sheets = {}, sheetnames/*:Array<string>*/ = [], cursheet/*:Worksheet*/ = (opts.dense ? [] : {}), sheetname = "";
-	var table = {}, cell = ({}/*:any*/), row = {};// eslint-disable-line no-unused-vars
+	var sheets = {}, sheetnames/*:Array<string>*/ = [], cursheet/*:Worksheet*/ = ({}), sheetname = ""; if(opts.dense) cursheet["!data"] = [];
+	var cell = ({}/*:any*/), row = {};// eslint-disable-line no-unused-vars
 	var dtag = xlml_parsexmltag('<Data ss:Type="String">'), didx = 0;
 	var c = 0, r = 0;
 	var refguess/*:Range*/ = {s: {r:2000000, c:2000000}, e: {r:0, c:0} };
@@ -213,27 +231,27 @@ function parse_xlml_xml(d, _opts)/*:Workbook*/ {
 				break;
 			}
 			if(state[state.length-1][1]) break;
-			if(Rn[1]==='/') parse_xlml_data(str.slice(didx, Rn.index), ss, dtag, state[state.length-1][0]==/*"Comment"*/"comment"?comment:cell, {c:c,r:r}, styles, cstys[c], row, arrayf, opts);
+			if(Rn[1]==='/') parse_xlml_data(str.slice(didx, Rn.index), ss, dtag, state[state.length-1][0]==/*"Comment"*/"comment"?comment:cell, {c:c,r:r}, styles, cstys[c], row, arrayf, opts, Workbook.WBProps.date1904);
 			else { ss = ""; dtag = xlml_parsexmltag(Rn[0]); didx = Rn.index + Rn[0].length; }
 			break;
 		case 'cell' /*case 'Cell'*/:
 			if(Rn[1]==='/'){
 				if(comments.length > 0) cell.c = comments;
-				if((!opts.sheetRows || opts.sheetRows > r) && cell.v !== undefined) {
+				if((!opts.sheetRows || opts.sheetRows > r) && cell.v !== void 0) {
 					if(opts.dense) {
-						if(!cursheet[r]) cursheet[r] = [];
-						cursheet[r][c] = cell;
+						if(!cursheet["!data"][r]) cursheet["!data"][r] = [];
+						cursheet["!data"][r][c] = cell;
 					} else cursheet[encode_col(c) + encode_row(r)] = cell;
 				}
 				if(cell.HRef) {
-					cell.l = ({Target:cell.HRef}/*:any*/);
+					cell.l = ({Target:unescapexml(cell.HRef)}/*:any*/);
 					if(cell.HRefScreenTip) cell.l.Tooltip = cell.HRefScreenTip;
 					delete cell.HRef; delete cell.HRefScreenTip;
 				}
 				if(cell.MergeAcross || cell.MergeDown) {
 					cc = c + (parseInt(cell.MergeAcross,10)|0);
 					rr = r + (parseInt(cell.MergeDown,10)|0);
-					merges.push({s:{c:c,r:r},e:{c:cc,r:rr}});
+					if(cc > c || rr > r) merges.push({s:{c:c,r:r},e:{c:cc,r:rr}});
 				}
 				if(!opts.sheetStubs) { if(cell.MergeAcross) c = cc + 1; else ++c; }
 				else if(cell.MergeAcross || cell.MergeDown) {
@@ -242,8 +260,8 @@ function parse_xlml_xml(d, _opts)/*:Workbook*/ {
 						for(var cmd = r; cmd <= rr; ++cmd) {
 							if(cma > c || cmd > r) {
 								if(opts.dense) {
-									if(!cursheet[cmd]) cursheet[cmd] = [];
-									cursheet[cmd][cma] = {t:'z'};
+									if(!cursheet["!data"][cmd]) cursheet["!data"][cmd] = [];
+									cursheet["!data"][cmd][cma] = {t:'z'};
 								} else cursheet[encode_col(cma) + encode_row(cmd)] = {t:'z'};
 							}
 						}
@@ -302,7 +320,7 @@ function parse_xlml_xml(d, _opts)/*:Workbook*/ {
 				state.push([Rn[3], false]);
 				tmp = xlml_parsexmltag(Rn[0]);
 				sheetname = unescapexml(tmp.Name);
-				cursheet = (opts.dense ? [] : {});
+				cursheet = ({}); if(opts.dense) cursheet["!data"] = [];
 				merges = [];
 				arrayf = [];
 				rowinfo = [];
@@ -314,7 +332,6 @@ function parse_xlml_xml(d, _opts)/*:Workbook*/ {
 			if(Rn[1]==='/'){if((tmp=state.pop())[0]!==Rn[3]) throw new Error("Bad state: "+tmp.join("|"));}
 			else if(Rn[0].slice(-2) == "/>") break;
 			else {
-				table = xlml_parsexmltag(Rn[0]);
 				state.push([Rn[3], false]);
 				cstys = []; seencol = false;
 			}
@@ -328,12 +345,13 @@ function parse_xlml_xml(d, _opts)/*:Workbook*/ {
 		case 'numberformat' /*case 'NumberFormat'*/:
 			stag.nf = unescapexml(xlml_parsexmltag(Rn[0]).Format || "General");
 			if(XLMLFormatMap[stag.nf]) stag.nf = XLMLFormatMap[stag.nf];
-			for(var ssfidx = 0; ssfidx != 0x188; ++ssfidx) if(SSF._table[ssfidx] == stag.nf) break;
-			if(ssfidx == 0x188) for(ssfidx = 0x39; ssfidx != 0x188; ++ssfidx) if(SSF._table[ssfidx] == null) { SSF.load(stag.nf, ssfidx); break; }
+			for(var ssfidx = 0; ssfidx != 0x188; ++ssfidx) if(table_fmt[ssfidx] == stag.nf) break;
+			if(ssfidx == 0x188) for(ssfidx = 0x39; ssfidx != 0x188; ++ssfidx) if(table_fmt[ssfidx] == null) { SSF__load(stag.nf, ssfidx); break; }
 			break;
 
 		case 'column' /*case 'Column'*/:
 			if(state[state.length-1][0] !== /*'Table'*/'table') break;
+			if(Rn[1]==='/') break;
 			csty = xlml_parsexmltag(Rn[0]);
 			if(csty.Hidden) { csty.hidden = true; delete csty.Hidden; }
 			if(csty.Width) csty.wpx = parseInt(csty.Width, 10);
@@ -351,7 +369,7 @@ function parse_xlml_xml(d, _opts)/*:Workbook*/ {
 			if(!Workbook.Names) Workbook.Names = [];
 			var _NamedRange = parsexmltag(Rn[0]);
 			var _DefinedName/*:DefinedName*/ = ({
-				Name: _NamedRange.Name,
+				Name: xlml_prefix_dname(_NamedRange.Name),
 				Ref: rc_to_a1(_NamedRange.RefersTo.slice(1), {r:0, c:0})
 			}/*:any*/);
 			if(Workbook.Sheets.length>0) _DefinedName.Sheet=Workbook.Sheets.length-1;
@@ -424,6 +442,7 @@ function parse_xlml_xml(d, _opts)/*:Workbook*/ {
 			} else {
 				state.push([Rn[3], false]);
 				tmp = xlml_parsexmltag(Rn[0]);
+				if(!parsexmlbool(tmp["ShowAlways"]||"0")) comments.hidden = true;
 				comment = ({a:tmp.Author}/*:any*/);
 			}
 			break;
@@ -471,6 +490,8 @@ function parse_xlml_xml(d, _opts)/*:Workbook*/ {
 			else if(Rn[0].charAt(Rn[0].length-2) !== '/') state.push([Rn[3], true]);
 			break;
 
+		case 'null' /*case 'Null'*/: break;
+
 		default:
 			/* FODS file root is <office:document> */
 			if(state.length == 0 && Rn[3] == "document") return parse_fods(str, opts);
@@ -513,6 +534,9 @@ function parse_xlml_xml(d, _opts)/*:Workbook*/ {
 						/*:: if(!Workbook.WBProps) Workbook.WBProps = {}; */
 						Workbook.WBProps.date1904 = true;
 						break;
+					case 'hidehorizontalscrollbar' /*case 'HideHorizontalScrollBar'*/: break;
+					case 'hideverticalscrollbar' /*case 'HideVerticalScrollBar'*/: break;
+					case 'hideworkbooktabs' /*case 'HideWorkbookTabs'*/: break;
 					case 'windowheight' /*case 'WindowHeight'*/: break;
 					case 'windowwidth' /*case 'WindowWidth'*/: break;
 					case 'windowtopx' /*case 'WindowTopX'*/: break;
@@ -581,19 +605,19 @@ function parse_xlml_xml(d, _opts)/*:Workbook*/ {
 						break;
 					case 'header' /*case 'Header'*/:
 						if(!cursheet['!margins']) default_margins(cursheet['!margins']={}, 'xlml');
-						cursheet['!margins'].header = parsexmltag(Rn[0]).Margin;
+						if(!isNaN(+parsexmltag(Rn[0]).Margin)) cursheet['!margins'].header = +parsexmltag(Rn[0]).Margin;
 						break;
 					case 'footer' /*case 'Footer'*/:
 						if(!cursheet['!margins']) default_margins(cursheet['!margins']={}, 'xlml');
-						cursheet['!margins'].footer = parsexmltag(Rn[0]).Margin;
+						if(!isNaN(+parsexmltag(Rn[0]).Margin)) cursheet['!margins'].footer = +parsexmltag(Rn[0]).Margin;
 						break;
 					case 'pagemargins' /*case 'PageMargins'*/:
 						var pagemargins = parsexmltag(Rn[0]);
 						if(!cursheet['!margins']) default_margins(cursheet['!margins']={},'xlml');
-						if(pagemargins.Top) cursheet['!margins'].top = pagemargins.Top;
-						if(pagemargins.Left) cursheet['!margins'].left = pagemargins.Left;
-						if(pagemargins.Right) cursheet['!margins'].right = pagemargins.Right;
-						if(pagemargins.Bottom) cursheet['!margins'].bottom = pagemargins.Bottom;
+						if(!isNaN(+pagemargins.Top)) cursheet['!margins'].top = +pagemargins.Top;
+						if(!isNaN(+pagemargins.Left)) cursheet['!margins'].left = +pagemargins.Left;
+						if(!isNaN(+pagemargins.Right)) cursheet['!margins'].right = +pagemargins.Right;
+						if(!isNaN(+pagemargins.Bottom)) cursheet['!margins'].bottom = +pagemargins.Bottom;
 						break;
 					case 'displayrighttoleft' /*case 'DisplayRightToLeft'*/:
 						if(!Workbook.Views) Workbook.Views = [];
@@ -611,11 +635,14 @@ function parse_xlml_xml(d, _opts)/*:Workbook*/ {
 					case 'donotdisplaygridlines' /*case 'DoNotDisplayGridlines'*/:
 						break;
 
+					case 'activerow' /*case 'ActiveRow'*/: break;
+					case 'activecol' /*case 'ActiveCol'*/: break;
 					case 'toprowbottompane' /*case 'TopRowBottomPane'*/: break;
 					case 'leftcolumnrightpane' /*case 'LeftColumnRightPane'*/: break;
 
 					case 'unsynced' /*case 'Unsynced'*/: break;
 					case 'print' /*case 'Print'*/: break;
+					case 'printerrors' /*case 'PrintErrors'*/: break;
 					case 'panes' /*case 'Panes'*/: break;
 					case 'scale' /*case 'Scale'*/: break;
 					case 'pane' /*case 'Pane'*/: break;
@@ -630,8 +657,6 @@ function parse_xlml_xml(d, _opts)/*:Workbook*/ {
 					case 'horizontalresolution' /*case 'HorizontalResolution'*/: break;
 					case 'verticalresolution' /*case 'VerticalResolution'*/: break;
 					case 'numberofcopies' /*case 'NumberofCopies'*/: break;
-					case 'activerow' /*case 'ActiveRow'*/: break;
-					case 'activecol' /*case 'ActiveCol'*/: break;
 					case 'activepane' /*case 'ActivePane'*/: break;
 					case 'toprowvisible' /*case 'TopRowVisible'*/: break;
 					case 'leftcolumnvisible' /*case 'LeftColumnVisible'*/: break;
@@ -657,11 +682,17 @@ function parse_xlml_xml(d, _opts)/*:Workbook*/ {
 					case 'allowformatcells' /*case 'AllowFormatCells'*/: break;
 					case 'allowsizecols' /*case 'AllowSizeCols'*/: break;
 					case 'allowsizerows' /*case 'AllowSizeRows'*/: break;
-					case 'nosummaryrowsbelowdetail' /*case 'NoSummaryRowsBelowDetail'*/: break;
+					case 'nosummaryrowsbelowdetail' /*case 'NoSummaryRowsBelowDetail'*/:
+						if(!cursheet["!outline"]) cursheet["!outline"] = {};
+						cursheet["!outline"].above = true;
+						break;
 					case 'tabcolorindex' /*case 'TabColorIndex'*/: break;
 					case 'donotdisplayheadings' /*case 'DoNotDisplayHeadings'*/: break;
 					case 'showpagelayoutzoom' /*case 'ShowPageLayoutZoom'*/: break;
-					case 'nosummarycolumnsrightdetail' /*case 'NoSummaryColumnsRightDetail'*/: break;
+					case 'nosummarycolumnsrightdetail' /*case 'NoSummaryColumnsRightDetail'*/:
+						if(!cursheet["!outline"]) cursheet["!outline"] = {};
+						cursheet["!outline"].left = true;
+						break;
 					case 'blackandwhite' /*case 'BlackAndWhite'*/: break;
 					case 'donotdisplayzeros' /*case 'DoNotDisplayZeros'*/: break;
 					case 'displaypagebreak' /*case 'DisplayPageBreak'*/: break;
@@ -888,16 +919,17 @@ function parse_xlml_xml(d, _opts)/*:Workbook*/ {
 	if(!opts.bookSheets && !opts.bookProps) out.Sheets = sheets;
 	out.SheetNames = sheetnames;
 	out.Workbook = Workbook;
-	out.SSF = SSF.get_table();
+	out.SSF = dup(table_fmt);
 	out.Props = Props;
 	out.Custprops = Custprops;
+	out.bookType = "xlml";
 	return out;
 }
 
 function parse_xlml(data/*:RawBytes|string*/, opts)/*:Workbook*/ {
 	fix_read_opts(opts=opts||{});
 	switch(opts.type||"base64") {
-		case "base64": return parse_xlml_xml(Base64.decode(data), opts);
+		case "base64": return parse_xlml_xml(Base64_decode(data), opts);
 		case "binary": case "buffer": case "file": return parse_xlml_xml(data, opts);
 		case "array": return parse_xlml_xml(a2s(data), opts);
 	}
@@ -914,9 +946,10 @@ function write_props_xlml(wb/*:Workbook*/, opts)/*:string*/ {
 	return o.join("");
 }
 /* TODO */
-function write_wb_xlml(/*::wb, opts*/)/*:string*/ {
+function write_wb_xlml(wb/*::, opts*/)/*:string*/ {
 	/* OfficeDocumentSettings */
 	/* ExcelWorkbook */
+	if((((wb||{}).Workbook||{}).WBProps||{}).date1904) return '<ExcelWorkbook xmlns="urn:schemas-microsoft-com:office:excel"><Date1904/></ExcelWorkbook>';
 	return "";
 }
 /* TODO */
@@ -925,14 +958,14 @@ function write_sty_xlml(wb, opts)/*:string*/ {
 	var styles/*:Array<string>*/ = ['<Style ss:ID="Default" ss:Name="Normal"><NumberFormat/></Style>'];
 	opts.cellXfs.forEach(function(xf, id) {
 		var payload/*:Array<string>*/ = [];
-		payload.push(writextag('NumberFormat', null, {"ss:Format": escapexml(SSF._table[xf.numFmtId])}));
+		payload.push(writextag('NumberFormat', null, {"ss:Format": escapexml(table_fmt[xf.numFmtId])}));
 
 		var o = /*::(*/{"ss:ID": "s" + (21+id)}/*:: :any)*/;
 		styles.push(writextag('Style', payload.join(""), o));
 	});
 	return writextag("Styles", styles.join(""));
 }
-function write_name_xlml(n) { return writextag("NamedRange", null, {"ss:Name": n.Name, "ss:RefersTo":"=" + a1_to_rc(n.Ref, {r:0,c:0})}); }
+function write_name_xlml(n) { return writextag("NamedRange", null, {"ss:Name": n.Name.slice(0,6) == "_xlnm." ? n.Name.slice(6) : n.Name, "ss:RefersTo":"=" + a1_to_rc(n.Ref, {r:0,c:0})}); }
 function write_names_xlml(wb/*::, opts*/)/*:string*/ {
 	if(!((wb||{}).Workbook||{}).Names) return "";
 	/*:: if(!wb || !wb.Workbook || !wb.Workbook.Names) throw new Error("unreachable"); */
@@ -1072,11 +1105,15 @@ function write_ws_xlml_wsopts(ws/*:Worksheet*/, opts, idx/*:number*/, wb/*:Workb
 	return writextag("WorksheetOptions", o.join(""), {xmlns:XLMLNS.x});
 }
 function write_ws_xlml_comment(comments/*:Array<any>*/)/*:string*/ {
+	/* TODO: test multiple comments */
 	return comments.map(function(c) {
 		// TODO: formatted text
 		var t = xlml_unfixstr(c.t||"");
 		var d =writextag("ss:Data", t, {"xmlns":"http://www.w3.org/TR/REC-html40"});
-		return writextag("Comment", d, {"ss:Author":c.a});
+		var p = {};
+		if(c.a) p["ss:Author"] = c.a;
+		if(!comments.hidden) p["ss:ShowAlways"] = "1";
+		return writextag("Comment", d, p);
 	}).join("");
 }
 function write_ws_xlml_cell(cell, ref/*:string*/, ws, opts, idx/*:number*/, wb, addr)/*:string*/{
@@ -1109,7 +1146,7 @@ function write_ws_xlml_cell(cell, ref/*:string*/, ws, opts, idx/*:number*/, wb, 
 		case 'n': t = 'Number'; p = String(cell.v); break;
 		case 'b': t = 'Boolean'; p = (cell.v ? "1" : "0"); break;
 		case 'e': t = 'Error'; p = BErr[cell.v]; break;
-		case 'd': t = 'DateTime'; p = new Date(cell.v).toISOString(); if(cell.z == null) cell.z = cell.z || SSF._table[14]; break;
+		case 'd': t = 'DateTime'; p = new Date(cell.v).toISOString(); if(cell.z == null) cell.z = cell.z || table_fmt[14]; break;
 		case 's': t = 'String'; p = escapexlml(cell.v||""); break;
 	}
 	/* TODO: cell style */
@@ -1147,7 +1184,7 @@ function write_ws_xlml_table(ws/*:Worksheet*/, opts, idx/*:number*/, wb/*:Workbo
 		if(n.hidden) k['ss:Hidden']="1";
 		o.push(writextag("Column",null,k));
 	});
-	var dense = Array.isArray(ws);
+	var dense = ws["!data"] != null;
 	for(var R = range.s.r; R <= range.e.r; ++R) {
 		var row = [write_ws_xlml_row(R, (ws['!rows']||[])[R])];
 		for(var C = range.s.c; C <= range.e.c; ++C) {
@@ -1162,7 +1199,7 @@ function write_ws_xlml_table(ws/*:Worksheet*/, opts, idx/*:number*/, wb/*:Workbo
 			}
 			if(skip) continue;
 			var addr = {r:R,c:C};
-			var ref = encode_cell(addr), cell = dense ? (ws[R]||[])[C] : ws[ref];
+			var ref = encode_col(C) + encode_row(R), cell = dense ? (ws["!data"][R]||[])[C] : ws[ref];
 			row.push(write_ws_xlml_cell(cell, ref, ws, opts, idx, wb, addr));
 		}
 		row.push("</Row>");
@@ -1185,13 +1222,15 @@ function write_ws_xlml(idx/*:number*/, opts, wb/*:Workbook*/)/*:string*/ {
 	/* WorksheetOptions */
 	o.push(write_ws_xlml_wsopts(ws, opts, idx, wb));
 
+	if(ws["!autofilter"]) o.push('<AutoFilter x:Range="' + a1_to_rc(fix_range(ws["!autofilter"].ref), {r:0,c:0}) + '" xmlns="urn:schemas-microsoft-com:office:excel"></AutoFilter>');
+
 	return o.join("");
 }
 function write_xlml(wb, opts)/*:string*/ {
 	if(!opts) opts = {};
-	if(!wb.SSF) wb.SSF = SSF.get_table();
+	if(!wb.SSF) wb.SSF = dup(table_fmt);
 	if(wb.SSF) {
-		make_ssf(SSF); SSF.load_table(wb.SSF);
+		make_ssf(); SSF_load_table(wb.SSF);
 		// $FlowIgnore
 		opts.revssf = evert_num(wb.SSF); opts.revssf[wb.SSF[65535]] = 0;
 		opts.ssf = wb.SSF;

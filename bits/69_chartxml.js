@@ -1,6 +1,3 @@
-RELS.CHART = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart";
-RELS.CHARTEX = "http://schemas.microsoft.com/office/2014/relationships/chartEx";
-
 function parse_Cache(data/*:string*/)/*:[Array<number|string>, string, ?string]*/ {
 	var col/*:Array<number|string>*/ = [];
 	var num = data.match(/^<c:numCache>/);
@@ -37,7 +34,10 @@ function parse_chart(data/*:?string*/, name/*:string*/, opts, rels, wb, csheet) 
 		refguess.e.c = C;
 		col = encode_col(C);
 		cache[0].forEach(function(n,i) {
-			cs[col + encode_row(i)] = {t:'n', v:n, z:cache[1] };
+			if(cs["!data"]) {
+				if(!cs["!data"][i]) cs["!data"][i] = [];
+				cs["!data"][i][C] = {t:'n', v:n, z:cache[1] };
+			} else cs[col + encode_row(i)] = {t:'n', v:n, z:cache[1] };
 			R = i;
 		});
 		if(refguess.e.r < R) refguess.e.r = R;

@@ -14,9 +14,6 @@ var EXT_PROPS/*:Array<Array<string> >*/ = [
 	["TitlesOfParts", "TitlesOfParts", "raw"]
 ];
 
-XMLNS.EXT_PROPS = "http://schemas.openxmlformats.org/officeDocument/2006/extended-properties";
-RELS.EXT_PROPS  = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties';
-
 var PseudoPropsPairs = [
 	"Worksheets",  "SheetNames",
 	"NamedRanges", "DefinedNames",
@@ -76,7 +73,7 @@ function parse_ext_props(data, p, opts) {
 	EXT_PROPS.forEach(function(f) {
 		var xml = (data.match(matchtag(f[0]))||[])[1];
 		switch(f[2]) {
-			case "string": p[f[1]] = unescapexml(xml||""); break;
+			case "string": if(xml) p[f[1]] = unescapexml(xml); break;
 			case "bool": p[f[1]] = xml === "true"; break;
 			case "raw":
 				var cur = data.match(new RegExp("<" + f[0] + "[^>]*>([\\s\\S]*?)<\/" + f[0] + ">"));
@@ -90,17 +87,15 @@ function parse_ext_props(data, p, opts) {
 	return p;
 }
 
-var EXT_PROPS_XML_ROOT = writextag('Properties', null, {
-	'xmlns': XMLNS.EXT_PROPS,
-	'xmlns:vt': XMLNS.vt
-});
-
 function write_ext_props(cp/*::, opts*/)/*:string*/ {
 	var o/*:Array<string>*/ = [], W = writextag;
 	if(!cp) cp = {};
 	cp.Application = "SheetJS";
 	o[o.length] = (XML_HEADER);
-	o[o.length] = (EXT_PROPS_XML_ROOT);
+	o[o.length] = (writextag('Properties', null, {
+		'xmlns': XMLNS.EXT_PROPS,
+		'xmlns:vt': XMLNS.vt
+	}));
 
 	EXT_PROPS.forEach(function(f) {
 		if(cp[f[1]] === undefined) return;
