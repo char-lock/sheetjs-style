@@ -113,16 +113,19 @@ function safe1904(wb/*:Workbook*/)/*:string*/ {
 	return parsexmlbool(wb.Workbook.WBProps.date1904) ? "true" : "false";
 }
 
-var badchars = "][*?\/\\".split("");
+var badchars = /*#__PURE__*/":][*?\/\\".split("");
 function check_ws_name(n/*:string*/, safe/*:?boolean*/)/*:boolean*/ {
-	if(n.length > 31) { if(safe) return false; throw new Error("Sheet names cannot exceed 31 chars"); }
-	var _good = true;
-	badchars.forEach(function(c) {
-		if(n.indexOf(c) == -1) return;
-		if(!safe) throw new Error("Sheet name cannot contain : \\ / ? * [ ]");
-		_good = false;
-	});
-	return _good;
+	try {
+		if(n == "") throw new Error("Sheet name cannot be blank");
+		if(n.length > 31) throw new Error("Sheet name cannot exceed 31 chars");
+		if(n.charCodeAt(0) == 0x27 || n.charCodeAt(n.length - 1) == 0x27) throw new Error("Sheet name cannot start or end with apostrophe (')");
+		if(n.toLowerCase() == "history") throw new Error("Sheet name cannot be 'History'");
+		badchars.forEach(function(c) {
+			if(n.indexOf(c) == -1) return;
+			throw new Error("Sheet name cannot contain : \\ / ? * [ ]");
+		});
+	} catch(e) { if(safe) return false; throw e; }
+	return true;
 }
 function check_wb_names(N, S, codes) {
 	N.forEach(function(n,i) {
@@ -140,5 +143,16 @@ function check_wb(wb) {
 	var Sheets = (wb.Workbook && wb.Workbook.Sheets) || [];
 	check_wb_names(wb.SheetNames, Sheets, !!wb.vbaraw);
 	for(var i = 0; i < wb.SheetNames.length; ++i) check_ws(wb.Sheets[wb.SheetNames[i]], wb.SheetNames[i], i);
+	wb.SheetNames.forEach(function(n, i) {
+		var ws = wb.Sheets[n];
+		if(!ws || !ws["!autofilter"]) return;
+		var DN;
+		if(!wb.Workbook) wb.Workbook = {};
+		if(!wb.Workbook.Names) wb.Workbook.Names = [];
+		wb.Workbook.Names.forEach(function(dn) { if(dn.Name == "_xlnm._FilterDatabase" && dn.Sheet == i) DN = dn; });
+		var nn = formula_quote_sheet_name(n) + "!" + fix_range(ws["!autofilter"].ref);
+		if(DN) DN.Ref = nn;
+		else wb.Workbook.Names.push({Name: "_xlnm._FilterDatabase", Sheet: i, Ref: nn});
+	});
 	/* TODO: validate workbook */
 }
